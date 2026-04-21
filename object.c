@@ -1,60 +1,10 @@
-/
-// Every piece of data (file contents, directory listings, commits) is stored
-// as an "object" named by its SHA-256 hash. Objects are stored under
-// .pes/objects/XX/YYYYYY... where XX is the first two hex characters of the
-// hash (directory sharding).
-//
-// PROVIDED functions: compute_hash, object_path, object_exists, h
-// ─── PROVIDED ────────────────────────────────────────────────────────────────
-
-void hash_to_hex(const ObjectID *id, char *hex_out) {
-    for (int i = 0; i < HASH_SIZE; i++) {
-        sprintf(hex_out + i * 2, "%02x", id->hash[i]);
-    }
-    hex_out[HASH_HEX_SIZE] = '\0';
-}
-
-int hex_to_hash(const char *hex, ObjectID *id_out) {
-    if (strlen(hex) < HASH_HEX_SIZE) return -1;
-    for (int i = 0; i < HASH_SIZE; i++) {
-        unsigned int byte;
-        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
-        id_out->hash[i] = (uint8_t)byte;   }
-    return 0;
-}
-
-void compute_hash(const void *data, size_t len, ObjectID *id_out) {
-    unsigned int hash_len;
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, id_out->hash, &hash_len);
-    EVP_MD_CTX_free(ctx);
-}
-
-// Get the filesystem path where an object should be stored.
-// Format: .pes/objects
-// The first 2 hex chars form the shard directory; the rest is the filename.
-void object_path(const ObjectID *id, char *path_out, size_t path_size) {
-    char hex[HASH_HEX_SIZE + 1];
-    hash_to_hex(id, hex);
-    snprintf(path_out, path_size, "%s/%.2s/%s", OBJECTS_DIR, hex, hex + 2);
-}
-
-int object_exists(const ObjectID *id) {
-    char path[512];
-    object_path(id, path, sizeof(path));
-    return access(path, F_OK) == 0;
-}
-
-// ─── TODO: Implement these ──────────────────────────────────────────────────
-
 #include "pes.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <openssl/evp.h>
 
 #define OBJECTS_DIR ".pes/objects"
 
@@ -66,10 +16,16 @@ static void ensure_dir(const char *path) {
     }
 }
 
-int object_write(const char *type, const void *data, size_t size, char *hash_out) {
-    (void)hash_out; // not used yet
+// convert binary hash → hex string
+static void hash_to_hex(const unsigned char *hash, char *hex) {
+    for (int i = 0; i < 32; i++) {
+        sprintf(hex + (i * 2), "%02x", hash[i]);
+    }
+    hex[64] = '\0';
+}
 
-    // ensure .pes and objects dir exist
+int object_write(const char *type, const void *data, size_t size, char *hash_out) {
+    // ensure directories
     ensure_dir(".pes");
     ensure_dir(OBJECTS_DIR);
 
@@ -77,19 +33,35 @@ int object_write(const char *type, const void *data, size_t size, char *hash_out
     char header[64];
     int header_len = snprintf(header, sizeof(header), "%s %zu", type, size) + 1;
 
-    // allocate buffer for full object
+    // combine header + data
     size_t total_size = header_len + size;
-    char *buffer = malloc(total_size);
+    unsigned char *buffer = malloc(total_size);
     if (!buffer) {
         perror("malloc failed");
         return -1;
     }
 
-    // copy header + data
     memcpy(buffer, header, header_len);
     memcpy(buffer + header_len, data, size);
 
-    // for now: just free and return success
+    // compute SHA-256
+    unsigned char hash[32];
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        free(buffer);
+        return -1;
+    }
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, buffer, total_size);
+    EVP_DigestFinal_ex(ctx, hash, NULL);
+
+    EVP_MD_CTX_free(ctx);
+
+    // convert to hex
+    hash_to_hex(hash, hash_out);
+
+    // free buffer
     free(buffer);
 
     return 0;
