@@ -8,7 +8,7 @@
 
 #define OBJECTS_DIR ".pes/objects"
 
-// helper to ensure directory exists
+// ensure directory exists
 static void ensure_dir(const char *path) {
     struct stat st = {0};
     if (stat(path, &st) == -1) {
@@ -16,7 +16,7 @@ static void ensure_dir(const char *path) {
     }
 }
 
-// convert binary hash → hex string
+// convert binary hash → hex
 static void hash_to_hex(const unsigned char *hash, char *hex) {
     for (int i = 0; i < 32; i++) {
         sprintf(hex + (i * 2), "%02x", hash[i]);
@@ -25,15 +25,14 @@ static void hash_to_hex(const unsigned char *hash, char *hex) {
 }
 
 int object_write(const char *type, const void *data, size_t size, char *hash_out) {
-    // ensure directories
     ensure_dir(".pes");
     ensure_dir(OBJECTS_DIR);
 
-    // create header: "type size\0"
+    // header
     char header[64];
     int header_len = snprintf(header, sizeof(header), "%s %zu", type, size) + 1;
 
-    // combine header + data
+    // combine
     size_t total_size = header_len + size;
     unsigned char *buffer = malloc(total_size);
     if (!buffer) {
@@ -44,26 +43,35 @@ int object_write(const char *type, const void *data, size_t size, char *hash_out
     memcpy(buffer, header, header_len);
     memcpy(buffer + header_len, data, size);
 
-    // compute SHA-256
+    // hash
     unsigned char hash[32];
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, buffer, total_size);
+    EVP_DigestFinal_ex(ctx, hash, NULL);
+    EVP_MD_CTX_free(ctx);
+
+    hash_to_hex(hash, hash_out);
+
+    // directory structure
+    char dir[256], path[512];
+    snprintf(dir, sizeof(dir), "%s/%.2s", OBJECTS_DIR, hash_out);
+    ensure_dir(dir);
+
+    snprintf(path, sizeof(path), "%s/%s", dir, hash_out + 2);
+
+    // write file
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        perror("fopen failed");
         free(buffer);
         return -1;
     }
 
-    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(ctx, buffer, total_size);
-    EVP_DigestFinal_ex(ctx, hash, NULL);
+    fwrite(buffer, 1, total_size, fp);
+    fclose(fp);
 
-    EVP_MD_CTX_free(ctx);
-
-    // convert to hex
-    hash_to_hex(hash, hash_out);
-
-    // free buffer
     free(buffer);
-
     return 0;
 }
 
